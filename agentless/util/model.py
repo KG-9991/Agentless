@@ -1,6 +1,8 @@
 import json
 from abc import ABC, abstractmethod
 from typing import List
+import requests
+import os
 
 from agentless.util.api_requests import (
     create_anthropic_config,
@@ -416,5 +418,70 @@ def make_model(
             max_new_tokens=max_tokens,
             temperature=temperature,
         )
+    elif backend == "vllm":
+        return VLLMDecoder(
+            name=model,
+            logger=logger,
+            batch_size=batch_size,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+        )
     else:
         raise NotImplementedError
+
+class VLLMDecoder(DecoderBase):
+    def __init__(self, name: str, logger, **kwargs) -> None:
+        super().__init__(name, logger, **kwargs)
+        self.api_endpoint = os.environ.get("VLLM_API_ENDPOINT", "http://localhost:8000/v1/completions")
+        
+    def codegen(self, message: str, num_samples: int = 1, prompt_cache: bool = False) -> List[dict]:
+        if self.temperature == 0:
+            assert num_samples == 1
+            
+        # Format the prompt if needed (depends on your vLLM setup)
+        if isinstance(message, list):
+            # Handle message list format
+            prompt = message  # You may need specific formatting here
+        else:
+            # Handle string format
+            prompt = message
+            
+        # Create the API request
+        payload = {
+            "prompt": prompt,
+            "max_tokens": self.max_new_tokens,
+            "temperature": max(self.temperature, 0.01),
+            "n": num_samples,
+            "top_p": 0.95
+        }
+        
+        try:
+            response = requests.post(self.api_endpoint, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            
+            # Extract responses and token counts
+            trajs = []
+            for i in range(num_samples):
+                if i < len(result.get("choices", [])):
+                    trajs.append({
+                        "response": result["choices"][i]["text"],
+                        "usage": {
+                            "completion_tokens": result.get("usage", {}).get("completion_tokens", 0),
+                            "prompt_tokens": result.get("usage", {}).get("prompt_tokens", 0),
+                        },
+                    })
+                else:
+                    trajs.append({
+                        "response": "",
+                        "usage": {"completion_tokens": 0, "prompt_tokens": 0},
+                    })
+            
+            return trajs
+            
+        except Exception as e:
+            self.logger.error(f"vLLM API request failed: {e}")
+            return [{"response": "", "usage": {"completion_tokens": 0, "prompt_tokens": 0}}]
+    
+    def is_direct_completion(self) -> bool:
+        return False

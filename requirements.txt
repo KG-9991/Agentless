@@ -7,3 +7,7 @@ libcst
 llama-index
 jsonlines
 swebench @ git+https://github.com/princeton-nlp/SWE-bench
+requests
+transformers>=4.35.0
+torch>=2.0.0
+accelerate>=0.25.0
