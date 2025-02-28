@@ -433,6 +433,8 @@ class VLLMDecoder(DecoderBase):
     def __init__(self, name: str, logger, **kwargs) -> None:
         super().__init__(name, logger, **kwargs)
         self.api_endpoint = os.environ.get("VLLM_API_ENDPOINT", "http://localhost:8000/v1/completions")
+        self.api_key = os.environ.get("VLLM_API_KEY", "token-abc123")
+        self.logger.info(f"Using vLLM endpoint: {self.api_endpoint}")
         
     def codegen(self, message: str, num_samples: int = 1, prompt_cache: bool = False) -> List[dict]:
         if self.temperature == 0:
@@ -445,6 +447,11 @@ class VLLMDecoder(DecoderBase):
         else:
             # Handle string format
             prompt = message
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
             
         # Create the API request
         payload = {
@@ -456,7 +463,7 @@ class VLLMDecoder(DecoderBase):
         }
         
         try:
-            response = requests.post(self.api_endpoint, json=payload)
+            response = requests.post(self.api_endpoint, json=payload, headers=headers)
             response.raise_for_status()
             result = response.json()
             
