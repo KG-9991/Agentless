@@ -432,7 +432,7 @@ def make_model(
 class VLLMDecoder(DecoderBase):
     def __init__(self, name: str, logger, **kwargs) -> None:
         super().__init__(name, logger, **kwargs)
-        self.api_endpoint = os.environ.get("VLLM_API_ENDPOINT", "http://localhost:8000/v1/completions")
+        self.api_endpoint = os.environ.get("VLLM_API_ENDPOINT", "http://localhost:8002/v1/completions")
         self.api_key = os.environ.get("VLLM_API_KEY", "token-abc123")
         self.logger.info(f"Using vLLM endpoint: {self.api_endpoint}")
         
@@ -440,12 +440,19 @@ class VLLMDecoder(DecoderBase):
         if self.temperature == 0:
             assert num_samples == 1
             
-        # Format the prompt if needed (depends on your vLLM setup)
+        # Format the message properly based on its type
         if isinstance(message, list):
-            # Handle message list format
-            prompt = message  # You may need specific formatting here
+            # For message list format (chat), convert to a prompt string
+            prompt = ""
+            for msg in message:
+                if "content" in msg and isinstance(msg["content"], str):
+                    prompt += msg["content"] + "\n"
+                elif "content" in msg and isinstance(msg["content"], list):
+                    for content_item in msg["content"]:
+                        if isinstance(content_item, dict) and "text" in content_item:
+                            prompt += content_item["text"] + "\n"
         else:
-            # Handle string format
+            # For string messages, use as is
             prompt = message
 
         headers = {
@@ -453,41 +460,49 @@ class VLLMDecoder(DecoderBase):
             "Authorization": f"Bearer {self.api_key}"
         }
             
-        # Create the API request
+        # Create the API request with the EXACT format that worked
         payload = {
+            "model": self.name,  # This will be the full model path
             "prompt": prompt,
             "max_tokens": self.max_new_tokens,
             "temperature": max(self.temperature, 0.01),
-            "n": num_samples,
-            "top_p": 0.95
+            "n": num_samples
         }
+        
+        self.logger.info(f"Sending request to VLLM API with model: {self.name}")
         
         try:
             response = requests.post(self.api_endpoint, json=payload, headers=headers)
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                self.logger.error(f"VLLM API error: {response.status_code} {response.text}")
+                return [{"response": "", "usage": {"completion_tokens": 0, "prompt_tokens": 0}}]
+                
             result = response.json()
             
             # Extract responses and token counts
             trajs = []
-            for i in range(num_samples):
-                if i < len(result.get("choices", [])):
-                    trajs.append({
-                        "response": result["choices"][i]["text"],
-                        "usage": {
-                            "completion_tokens": result.get("usage", {}).get("completion_tokens", 0),
-                            "prompt_tokens": result.get("usage", {}).get("prompt_tokens", 0),
-                        },
-                    })
-                else:
-                    trajs.append({
-                        "response": "",
-                        "usage": {"completion_tokens": 0, "prompt_tokens": 0},
-                    })
+            for i in range(min(num_samples, len(result.get("choices", [])))):
+                trajs.append({
+                    "response": result["choices"][i]["text"],
+                    "usage": {
+                        "completion_tokens": result.get("usage", {}).get("completion_tokens", 0),
+                        "prompt_tokens": result.get("usage", {}).get("prompt_tokens", 0),
+                    },
+                })
+            
+            # Add empty responses if we got fewer than requested
+            while len(trajs) < num_samples:
+                trajs.append({
+                    "response": "",
+                    "usage": {"completion_tokens": 0, "prompt_tokens": 0},
+                })
             
             return trajs
             
         except Exception as e:
-            self.logger.error(f"vLLM API request failed: {e}")
+            self.logger.error(f"VLLM API request failed: {e}")
+            self.logger.exception(e)  # This will print the full traceback for debugging
             return [{"response": "", "usage": {"completion_tokens": 0, "prompt_tokens": 0}}]
     
     def is_direct_completion(self) -> bool:
