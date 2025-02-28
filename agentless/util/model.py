@@ -434,7 +434,47 @@ class VLLMDecoder(DecoderBase):
         super().__init__(name, logger, **kwargs)
         self.api_endpoint = os.environ.get("VLLM_API_ENDPOINT", "http://localhost:8002/v1/completions")
         self.api_key = os.environ.get("VLLM_API_KEY", "token-abc123")
-        self.logger.info(f"Using vLLM endpoint: {self.api_endpoint}")
+        
+        # Always make sure we're using the full model path
+        if not self.name.startswith("/shared_archive"):
+            self.logger.warning(f"Model name '{self.name}' doesn't look like a full path, this might cause errors")
+            
+        self.logger.info(f"Using vLLM endpoint: {self.api_endpoint} with model: {self.name}")
+        
+        # Verify the model exists right at initialization
+        self._verify_model()
+        
+    def _verify_model(self):
+        """Verify the model exists in the VLLM server."""
+        try:
+            url = self.api_endpoint.replace("/completions", "/models")
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            
+            self.logger.info(f"Verifying model {self.name} exists...")
+            response = requests.get(url, headers=headers)
+            
+            if response.status_code != 200:
+                self.logger.error(f"Error verifying model: {response.status_code} {response.text}")
+                return False
+                
+            models = response.json()
+            found = False
+            for model in models.get("data", []):
+                if model.get("id") == self.name:
+                    self.logger.info(f"✓ Model {self.name} verified!")
+                    found = True
+                    break
+                    
+            if not found:
+                self.logger.error(f"⚠ Model {self.name} NOT FOUND in available models!")
+                self.logger.info("Available models:")
+                for model in models.get("data", []):
+                    self.logger.info(f"  - {model.get('id')}")
+                
+            return found
+        except Exception as e:
+            self.logger.error(f"Error verifying model: {e}")
+            return False
         
     def codegen(self, message: str, num_samples: int = 1, prompt_cache: bool = False) -> List[dict]:
         if self.temperature == 0:
@@ -469,10 +509,15 @@ class VLLMDecoder(DecoderBase):
             "n": num_samples
         }
         
-        self.logger.info(f"Sending request to VLLM API with model: {self.name}")
+        self.logger.info(f"VLLM Request - Endpoint: {self.api_endpoint}")
+        self.logger.info(f"VLLM Request - Model: '{self.name}'")
+        self.logger.debug(f"VLLM Request - Headers: {headers}")
+        self.logger.debug(f"VLLM Request - Payload: {json.dumps(payload)}")
         
         try:
             response = requests.post(self.api_endpoint, json=payload, headers=headers)
+            
+            self.logger.info(f"VLLM Response - Status: {response.status_code}")
             
             if response.status_code != 200:
                 self.logger.error(f"VLLM API error: {response.status_code} {response.text}")
